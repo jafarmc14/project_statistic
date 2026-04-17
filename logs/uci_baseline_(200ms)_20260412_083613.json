@@ -1,0 +1,110 @@
+{
+  "created_at": "20260412_083613",
+  "dataset": "UCI Lower Limb EMG",
+  "mode": "baseline_holdout",
+  "config": {
+    "cfg_path": "D:\\poject_statistic_AI\\configs\\uci_baseline.yaml",
+    "data_path": "E:/dataset/SEMG_DB1",
+    "sampling_rate": 1000,
+    "window_ms": 200,
+    "overlap_ms": 100,
+    "test_size": 0.2,
+    "random_state": 42,
+    "models": [
+      "SVM",
+      "RF",
+      "MLP"
+    ]
+  },
+  "data_shape": {
+    "n_windows": 13154,
+    "features_per_window": 4,
+    "n_classes": 2
+  },
+  "class_map": {
+    "0": "abnormal",
+    "1": "normal"
+  },
+  "class_dist": {
+    "1": 4699,
+    "0": 8455
+  },
+  "results_per_model": {
+    "SVM": {
+      "accuracy": 0.734321550741163,
+      "macro_f1": 0.706654669574595
+    },
+    "RF": {
+      "accuracy": 0.9080197643481566,
+      "macro_f1": 0.8976625275331458
+    },
+    "MLP": {
+      "accuracy": 0.8817939946788294,
+      "macro_f1": 0.8666744335536034
+    }
+  },
+  "best": {
+    "model": "RF",
+    "accuracy": 0.9080197643481566,
+    "macro_f1": 0.8976625275331458,
+    "confusion_matrix": [
+      [
+        1613,
+        78
+      ],
+      [
+        164,
+        776
+      ]
+    ],
+    "classification_report": {
+      "0": {
+        "precision": 0.907709622960045,
+        "recall": 0.9538734476641041,
+        "f1-score": 0.9302191464821222,
+        "support": 1691.0
+      },
+      "1": {
+        "precision": 0.9086651053864169,
+        "recall": 0.825531914893617,
+        "f1-score": 0.8651059085841695,
+        "support": 940.0
+      },
+      "accuracy": 0.9080197643481566,
+      "macro avg": {
+        "precision": 0.908187364173231,
+        "recall": 0.8897026812788605,
+        "f1-score": 0.8976625275331458,
+        "support": 2631.0
+      },
+      "weighted avg": {
+        "precision": 0.9080509963848985,
+        "recall": 0.9080197643481566,
+        "f1-score": 0.9069555799203299,
+        "support": 2631.0
+      }
+    }
+  },
+  "figures": {
+    "bar": "figures/bar_UCI_Lower_Limb_EMG.png",
+    "confusion": "figures/confusion_UCI_Lower_Limb_EMG.png"
+  },
+  "metrics": {
+    "accuracy": 0.9080197643481566,
+    "macro_f1": 0.8976625275331458
+  },
+  "confusion": [
+    [
+      1613,
+      78
+    ],
+    [
+      164,
+      776
+    ]
+  ],
+  "labels": [
+    0,
+    1
+  ]
+}

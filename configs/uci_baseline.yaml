@@ -1,0 +1,25 @@
+dataset: "UCI Lower Limb EMG"
+#data_path: "D:/dataset/SEMG_DB1"   # change to your path 
+data_path: "E:/dataset/SEMG_DB1"
+window: 200          # ms
+overlap: 100         # ms
+sampling_rate: 1000  # Hz (adjust if needed)
+models: ["SVM", "RF", "MLP"]
+test_size: 0.2
+random_state: 42
+
+n_repeats: 20
+save_all_runs: true
+
+use_gpu: true
+gpu_id: 0
+
+mlp_params:
+  hidden_dims: [128, 64, 32]
+  dropout: 0.2
+  lr: 0.001
+  batch_size: 512
+  epochs: 60
+  weight_decay: 0.0001
+  patience: 8
+  val_fraction: 0.1
