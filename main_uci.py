@@ -10,10 +10,18 @@ from src.load_uci import load_uci_dataset
 from src.preprocessing import preprocess
 from src.feature_extraction import extract_features
 from src.models import build_models, evaluate_models
-from src.evaluation import stratified_split, print_report
 from src.evaluation import subjectwise_split, print_report
 from src.visualization import plot_bar, plot_confusion
 
+from src.eda import (
+    plot_class_distribution,
+    plot_raw_signal_example,
+    plot_preprocessed_signal_example,
+    plot_windowing_example,
+    plot_feature_correlation_heatmap,
+    plot_feature_boxplots,
+    plot_pca_2d
+)
 
 def _py(v):
     if isinstance(v, (np.integer,)):
@@ -64,6 +72,25 @@ def _aggregate_results(run_results_by_model):
         }
     return summary
 
+def _per_class_from_report(report_dict, class_to_id):
+    """
+    Ubah classification_report(output_dict=True) menjadi ringkasan per kelas
+    dengan nama kelas asli.
+    """
+    id_to_class = {str(v): str(k) for k, v in class_to_id.items()}
+    out = {}
+
+    for cls_id_str, cls_name in id_to_class.items():
+        if cls_id_str not in report_dict:
+            continue
+        out[cls_name] = {
+            "precision": float(report_dict[cls_id_str]["precision"]),
+            "recall": float(report_dict[cls_id_str]["recall"]),
+            "f1_score": float(report_dict[cls_id_str]["f1-score"]),
+            "support": int(report_dict[cls_id_str]["support"])
+        }
+
+    return out
 
 def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     with open(cfg_path, "r") as f:
@@ -81,11 +108,17 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         print(f"[INFO] GPU name: {torch.cuda.get_device_name(device)}")
 
     df = load_uci_dataset(cfg["data_path"])
+
+    plot_class_distribution(df, out_path="figures/eda_class_distribution.png")
+
+    # contoh satu file mentah
+    plot_raw_signal_example(df, sample_idx=0, out_path="figures/eda_raw_signal_example.png")
+
     print(df[["file", "subject_id", "label"]].head())
 
     for i in range(min(5, len(df))):
         print(df.iloc[i]["file"], np.asarray(df.iloc[i]["signal"]).shape)
-        
+
     fs = cfg.get("sampling_rate", 1000)
     win = cfg.get("window", 200)
     ovl = cfg.get("overlap", 100)
@@ -94,13 +127,31 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
 
     # preprocess sekali saja
     X_feat_list, y_list, g_list = [], [], []
-
+    saved_example_signals = False
     for sig, label, subject_id in tqdm(
         zip(df["signal"], df["label"], df["subject_id"]),
         total=len(df),
         desc="Preprocessing + feature extraction"
     ):
         x = preprocess(sig, fs=fs)
+
+        if not saved_example_signals:
+            plot_preprocessed_signal_example(
+                raw_signal=sig,
+                proc_signal=x,
+                label=label,
+                subject_id=subject_id,
+                out_path="figures/eda_preprocessed_signal_example.png"
+            )
+            plot_windowing_example(
+                proc_signal=x,
+                fs=fs,
+                window_ms=win,
+                overlap_ms=ovl,
+                out_path="figures/eda_windowing_example.png"
+            )
+            saved_example_signals = True
+
         feats = extract_features(x, window_ms=win, overlap_ms=ovl, fs=fs)
 
         if feats.shape[0] == 0:
@@ -119,6 +170,9 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     X = np.vstack(X_feat_list).astype(np.float32)
     y = np.concatenate(y_list)
     groups = np.concatenate(g_list)
+    plot_feature_correlation_heatmap(X, out_path="figures/eda_feature_correlation_heatmap.png")
+    plot_feature_boxplots(X, y, out_path="figures/eda_feature_boxplots.png")
+    plot_pca_2d(X, y, out_path="figures/eda_pca_2d.png")
 
     classes_sorted = sorted(np.unique(y))
     class_to_id = {c: i for i, c in enumerate(classes_sorted)}
@@ -200,13 +254,15 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         best_f1 = float(f1_score(y_test, best_pred, average="macro"))
         best_cm = confusion_matrix(y_test, best_pred).tolist()
         best_rep = classification_report(y_test, best_pred, output_dict=True)
+        best_rep_per_class = _per_class_from_report(best_rep, class_to_id)
 
         repeat_record["best_model_this_repeat"] = {
             "model": best_name,
             "accuracy": best_acc,
             "macro_f1": best_f1,
             "confusion_matrix": best_cm,
-            "classification_report": best_rep
+            "classification_report": best_rep,
+            "per_class_metrics": best_rep_per_class
         }
 
         if (best_run_overall is None) or (best_f1 > best_run_overall["macro_f1"]):
@@ -219,7 +275,8 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
                 "confusion_matrix": best_cm,
                 "classification_report": best_rep,
                 "y_test": y_test.tolist(),
-                "best_pred": best_pred.tolist()
+                "best_pred": best_pred.tolist(),
+                "per_class_metrics": best_rep_per_class,
             }
 
         run_details.append(repeat_record)
@@ -250,6 +307,16 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         )
 
     print(f"\nBest model by mean macro-F1: {best_model_mean}")
+
+    print("\n=== Per-class metrics (best single run) ===")
+    for cls_name, m in best_run_overall["per_class_metrics"].items():
+        print(
+            f"{cls_name}: "
+            f"precision={m['precision']:.4f}, "
+            f"recall={m['recall']:.4f}, "
+            f"f1={m['f1_score']:.4f}, "
+            f"support={m['support']}"
+        )
 
     class_dist = {str(k): int(v) for k, v in Counter(y_enc).items()}
 
@@ -294,7 +361,8 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             "accuracy": best_run_overall["accuracy"],
             "macro_f1": best_run_overall["macro_f1"],
             "confusion_matrix": best_run_overall["confusion_matrix"],
-            "classification_report": best_run_overall["classification_report"]
+            "classification_report": best_run_overall["classification_report"],
+            "per_class_metrics": best_run_overall["per_class_metrics"],
         },
         "figures": {
             "bar": fig_bar,
