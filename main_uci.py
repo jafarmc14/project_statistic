@@ -11,6 +11,7 @@ from src.preprocessing import preprocess
 from src.feature_extraction import extract_features
 from src.models import build_models, evaluate_models
 from src.evaluation import stratified_split, print_report
+from src.evaluation import subjectwise_split, print_report
 from src.visualization import plot_bar, plot_confusion
 
 
@@ -80,6 +81,11 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         print(f"[INFO] GPU name: {torch.cuda.get_device_name(device)}")
 
     df = load_uci_dataset(cfg["data_path"])
+    print(df[["file", "subject_id", "label"]].head())
+
+    for i in range(min(5, len(df))):
+        print(df.iloc[i]["file"], np.asarray(df.iloc[i]["signal"]).shape)
+        
     fs = cfg.get("sampling_rate", 1000)
     win = cfg.get("window", 200)
     ovl = cfg.get("overlap", 100)
@@ -87,21 +93,32 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     save_all_runs = bool(cfg.get("save_all_runs", True))
 
     # preprocess sekali saja
-    X_feat_list, y_list = [], []
-    for sig, label in tqdm(zip(df["signal"], df["label"]), total=len(df), desc="Preprocessing + feature extraction"):
+    X_feat_list, y_list, g_list = [], [], []
+
+    for sig, label, subject_id in tqdm(
+        zip(df["signal"], df["label"], df["subject_id"]),
+        total=len(df),
+        desc="Preprocessing + feature extraction"
+    ):
         x = preprocess(sig, fs=fs)
         feats = extract_features(x, window_ms=win, overlap_ms=ovl, fs=fs)
+
         if feats.shape[0] == 0:
             continue
+
         y = np.array([label] * feats.shape[0])
+        g = np.array([subject_id] * feats.shape[0])
+
         X_feat_list.append(feats)
         y_list.append(y)
+        g_list.append(g)
 
     if len(X_feat_list) == 0:
         raise RuntimeError("No feature windows produced. Coba ubah window/overlap di configs.")
 
     X = np.vstack(X_feat_list).astype(np.float32)
     y = np.concatenate(y_list)
+    groups = np.concatenate(g_list)
 
     classes_sorted = sorted(np.unique(y))
     class_to_id = {c: i for i, c in enumerate(classes_sorted)}
@@ -118,11 +135,21 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         print(f"\n{'='*20} Repeat {repeat_idx+1}/{n_repeats} | seed={seed} {'='*20}")
         _seed_everything(seed)
 
-        X_train, X_test, y_train, y_test = stratified_split(
-            X, y_enc,
+        X_train, X_test, y_train, y_test, g_train, g_test = subjectwise_split(
+            X, y_enc, groups,
             test_size=cfg.get("test_size", 0.2),
             random_state=seed
         )
+
+        train_subjects = sorted(set(g_train.tolist()))
+        test_subjects = sorted(set(g_test.tolist()))
+        overlap_subjects = sorted(set(train_subjects).intersection(set(test_subjects)))
+
+        if overlap_subjects:
+            raise RuntimeError(f"Subject leakage detected: {overlap_subjects}")
+
+        print(f"[INFO] Train subjects: {len(train_subjects)} | Test subjects: {len(test_subjects)}")
+        print(f"[INFO] Train/Test subject overlap: {len(overlap_subjects)}")
 
         models = build_models(
             cfg.get("models", ["SVM", "RF", "MLP"]),
@@ -145,6 +172,13 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             "seed": seed,
             "test_size": cfg.get("test_size", 0.2),
             "results_per_model": {}
+        }
+
+        repeat_record["split_info"] = {
+            "n_train_subjects": int(len(train_subjects)),
+            "n_test_subjects": int(len(test_subjects)),
+            "train_subjects": list(train_subjects),
+            "test_subjects": list(test_subjects)
         }
 
         for model_name, metrics in results.items():
@@ -227,6 +261,8 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         "created_at": stamp,
         "dataset": dataset_name,
         "mode": "baseline_repeated_holdout",
+        "split_strategy": "subject-wise GroupShuffleSplit",
+        "n_unique_subjects": int(len(np.unique(groups))),
         "device": str(device),
         "config": {
             "cfg_path": cfg_path,

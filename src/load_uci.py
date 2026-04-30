@@ -1,19 +1,19 @@
 import os
 import numpy as np
 import pandas as pd
-
 import re
 
 _float_re = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
-def _load_txt_file(path, assume_first_is_time=True, prefer_last_channel=True):
+def _load_txt_file(path):
     """
-    Robust loader for SEMG_DB1 txt files:
-    - extracts all floats per line via regex
-    - keeps only rows that match the most common column count
-    - if multi-column: optionally drop first column (time) and
-      then either take last channel or mean across channels
-    Returns: 1D numpy array (signal)
+    Load SEMG_DB1 txt file and always return EMG-only data
+    with shape (time, 4), corresponding to RF, BF, VM, ST.
+
+    Supported layouts per row:
+    - 4 cols  : RF BF VM ST
+    - 5 cols  : RF BF VM ST FX
+    - 6 cols  : time RF BF VM ST FX
     """
     rows = []
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -21,75 +21,123 @@ def _load_txt_file(path, assume_first_is_time=True, prefer_last_channel=True):
             s = raw.strip()
             if not s:
                 continue
-            # extract floats anywhere in the line
+
             nums = _float_re.findall(s)
             if not nums:
                 continue
+
             try:
                 vals = [float(x) for x in nums]
             except Exception:
                 continue
+
             rows.append(vals)
 
     if not rows:
         raise RuntimeError(f"No numeric lines found in {path}")
 
-    # Determine most common column count (mode)
-    lens = [len(r) for r in rows]
-    # mode robustly
     from collections import Counter
+    lens = [len(r) for r in rows]
     L, _ = Counter(lens).most_common(1)[0]
 
-    # Keep only rows with that column count
     rows = [r for r in rows if len(r) == L]
     if len(rows) == 0:
         raise RuntimeError(f"No consistent rows with {L} columns in {path}")
 
-    data = np.asarray(rows, dtype=float)  # shape (n, L)
+    data = np.asarray(rows, dtype=float)
 
-    # If multi-column, select signal columns
-    if data.ndim == 2 and data.shape[1] > 1:
-        start_col = 1 if assume_first_is_time else 0
-        sig_part = data[:, start_col:]
-        if sig_part.shape[1] == 1:
-            signal = sig_part[:, 0]
-        else:
-            if prefer_last_channel:
-                signal = sig_part[:, -1]      # gunakan kanal terakhir
-            else:
-                signal = sig_part.mean(axis=1)  # atau rata-rata semua kanal
+    # Normalisasi layout agar output selalu (n_samples, 4)
+    if L == 4:
+        # langsung 4 channel EMG
+        emg = data[:, 0:4]
+
+    elif L == 5:
+        # kemungkinan RF BF VM ST FX
+        emg = data[:, 0:4]
+
+    elif L >= 6:
+        # kemungkinan time + RF BF VM ST FX
+        emg = data[:, 1:5]
+
     else:
-        signal = data.squeeze()
+        raise RuntimeError(f"Unexpected column count {L} in {path}")
 
-    # Jaga-jaga: buang NaN/Inf
-    mask = np.isfinite(signal)
-    signal = signal[mask]
-    if signal.size == 0:
-        raise RuntimeError(f"All values non-finite in {path}")
+    # buang baris yang non-finite
+    mask = np.all(np.isfinite(emg), axis=1)
+    emg = emg[mask]
 
-    return signal
+    if emg.size == 0:
+        raise RuntimeError(f"All EMG values non-finite in {path}")
+    
+    if emg.shape[1] != 4:
+        raise RuntimeError(f"Expected 4 EMG channels, got {emg.shape[1]} in {path}")
+
+    return emg
+
+def _parse_filename(fname):
+    """
+    Contoh:
+      10Amar.txt -> subject_num=10, cohort=A, activity_code=mar
+      7Npie.txt  -> subject_num=7, cohort=N, activity_code=pie
+    """
+    base = os.path.splitext(os.path.basename(fname))[0]
+    m = re.match(r"^(\d+)([AN])([A-Za-z]+)$", base, flags=re.IGNORECASE)
+    if not m:
+        raise ValueError(f"Unexpected filename format: {fname}")
+
+    subject_num = int(m.group(1))
+    cohort_code = m.group(2).upper()
+    activity_code = m.group(3).lower()
+
+    cohort = "abnormal" if cohort_code == "A" else "normal"
+
+    # Berdasarkan pola nama file + deskripsi aktivitas
+    # pie ≈ standing (de pie), sen ≈ sitting (sentado), mar ≈ walking (marcha)
+    activity_map = {
+        "mar": "walking",
+        "pie": "standing",
+        "sen": "sitting"
+    }
+    if activity_code not in activity_map:
+        raise ValueError(f"Unknown activity code '{activity_code}' in {fname}")
+
+    activity = activity_map[activity_code]
+
+    # subject global unik, jangan hanya 1..11
+    subject_id = f"{cohort_code}{subject_num:02d}"
+
+    return subject_id, subject_num, cohort, activity, activity_code
 
 def load_uci_dataset(base_path):
-    """Load UCI Lower-Limb EMG (SEMG_DB1) with A_TXT (abnormal) and N_TXT (normal).
-    Returns DataFrame with columns: signal (1D array), label (str), file (str).
     """
-    data, labels, files = [], [], []
-    n_dir = os.path.join(base_path, "N_TXT")
-    a_dir = os.path.join(base_path, "A_TXT")
-    if not os.path.isdir(n_dir) or not os.path.isdir(a_dir):
-        raise FileNotFoundError("Expected N_TXT and A_TXT folders inside the UCI dataset path.")
+    Returns DataFrame with columns:
+    signal, label, subject_id, subject_num, cohort, activity_code, file
+    """
+    records = []
 
-    for f in sorted(os.listdir(n_dir)):
-        if f.lower().endswith(".txt"):
-            p = os.path.join(n_dir, f)
-            sig = _load_txt_file(p)
-            data.append(sig); labels.append("normal"); files.append(p)
+    for subdir, cohort_code in [("N_TXT", "N"), ("A_TXT", "A")]:
+        d = os.path.join(base_path, subdir)
+        if not os.path.isdir(d):
+            raise FileNotFoundError(f"Missing folder: {d}")
 
-    for f in sorted(os.listdir(a_dir)):
-        if f.lower().endswith(".txt"):
-            p = os.path.join(a_dir, f)
-            sig = _load_txt_file(p)
-            data.append(sig); labels.append("abnormal"); files.append(p)
+        for f in sorted(os.listdir(d)):
+            if not f.lower().endswith(".txt"):
+                continue
 
-    df = pd.DataFrame({"signal": data, "label": labels, "file": files})
+            p = os.path.join(d, f)
+            signal = _load_txt_file(p)
+
+            subject_id, subject_num, cohort, activity, activity_code = _parse_filename(f)
+
+            records.append({
+                "signal": signal,              # 2D: time x channels
+                "label": activity,            # target klasifikasi aktivitas
+                "subject_id": subject_id,     # mis. A01, N03
+                "subject_num": subject_num,   # 1..11
+                "cohort": cohort,             # normal / abnormal
+                "activity_code": activity_code,
+                "file": p
+            })
+
+    df = pd.DataFrame(records)
     return df
