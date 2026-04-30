@@ -3,6 +3,8 @@ from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
 
 import torch
 import torch.nn as nn
@@ -30,7 +32,12 @@ class TorchMLPNet(nn.Module):
 
 class TorchMLPClassifier:
     """
-    scikit-like wrapper untuk PyTorch MLP agar tetap kompatibel dengan evaluate_models().
+    Scikit-like wrapper untuk PyTorch MLP agar tetap kompatibel dengan evaluate_models().
+
+    Improvement:
+    - menambahkan StandardScaler internal
+    - scaler di-fit hanya pada train set
+    - X_val dan X_test ditransform menggunakan scaler yang sama
     """
     def __init__(
         self,
@@ -60,6 +67,9 @@ class TorchMLPClassifier:
         self.random_state = random_state
         self.val_fraction = val_fraction
 
+        # scaler khusus untuk MLP
+        self.scaler = StandardScaler()
+
         torch.manual_seed(random_state)
         np.random.seed(random_state)
         if torch.cuda.is_available():
@@ -75,6 +85,9 @@ class TorchMLPClassifier:
     def fit(self, X, y, sample_weight=None):
         X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y, dtype=np.int64)
+
+        # standardization fit hanya pada data train fold ini
+        X = self.scaler.fit_transform(X).astype(np.float32)
 
         n = len(X)
         idx = np.arange(n)
@@ -165,6 +178,7 @@ class TorchMLPClassifier:
 
     def predict(self, X):
         X = np.asarray(X, dtype=np.float32)
+        X = self.scaler.transform(X).astype(np.float32)
         self.model.eval()
 
         with torch.no_grad():
@@ -180,11 +194,14 @@ def build_models(names, input_dim=None, n_classes=None, device="cpu", random_sta
     mlp_params = mlp_params or {}
 
     if "SVM" in names:
-        models["SVM"] = SVC(
-            kernel="rbf",
-            C=1.0,
-            gamma="scale",
-            class_weight="balanced"
+        models["SVM"] = make_pipeline(
+            StandardScaler(),
+            SVC(
+                kernel="rbf",
+                C=1.0,
+                gamma="scale",
+                class_weight="balanced"
+            )
         )
 
     if "RF" in names:
@@ -214,8 +231,9 @@ def build_models(names, input_dim=None, n_classes=None, device="cpu", random_sta
 def evaluate_models(models, X_train, y_train, X_test, y_test, device="cpu"):
     """
     Evaluasi semua model:
-    - SVM/RF: CPU (scikit-learn)
-    - MLP: GPU bila device='cuda'
+    - SVM: StandardScaler + SVC
+    - RF : tanpa scaling
+    - MLP: scaler internal + PyTorch
     """
     results = {}
     best_name, best_f1, best_pred = None, -1.0, None
