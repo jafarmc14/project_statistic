@@ -92,6 +92,11 @@ def _per_class_from_report(report_dict, class_to_id):
 
     return out
 
+def _feature_names():
+    chans = ["RF", "BF", "VM", "ST"]
+    feats = ["MAV", "RMS", "WL", "ZC"]
+    return [f"{ch}_{ft}" for ch in chans for ft in feats]
+
 def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
@@ -170,6 +175,7 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     X = np.vstack(X_feat_list).astype(np.float32)
     y = np.concatenate(y_list)
     groups = np.concatenate(g_list)
+    feature_names = _feature_names()[:X.shape[1]]
     plot_feature_correlation_heatmap(X, out_path="figures/eda_feature_correlation_heatmap.png")
     plot_feature_boxplots(X, y, out_path="figures/eda_feature_boxplots.png")
     plot_pca_2d(X, y, out_path="figures/eda_pca_2d.png")
@@ -350,6 +356,7 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             "features_per_window": int(X.shape[1]),
             "n_classes": int(len(classes_sorted))
         },
+        "feature_names": feature_names,
         "class_map": {str(int(class_to_id[c])): _safe_name(c) for c in classes_sorted},
         "class_dist": class_dist,
         "aggregated_results_per_model": aggregated,
