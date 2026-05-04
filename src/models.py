@@ -234,8 +234,15 @@ def evaluate_models(models, X_train, y_train, X_test, y_test, device="cpu"):
     - SVM: StandardScaler + SVC
     - RF : tanpa scaling
     - MLP: scaler internal + PyTorch
+
+    Return:
+    - results: metrik per model
+    - best_name: model terbaik pada repeat ini
+    - best_pred: prediksi model terbaik pada repeat ini
+    - preds_by_model: prediksi semua model
     """
     results = {}
+    preds_by_model = {}
     best_name, best_f1, best_pred = None, -1.0, None
 
     for name, model in models.items():
@@ -243,6 +250,7 @@ def evaluate_models(models, X_train, y_train, X_test, y_test, device="cpu"):
         try:
             model.fit(X_train, y_train)
             pred = model.predict(X_test)
+            preds_by_model[name] = pred
 
             acc = accuracy_score(y_test, pred)
             f1 = f1_score(y_test, pred, average="macro", zero_division=0)
@@ -262,4 +270,4 @@ def evaluate_models(models, X_train, y_train, X_test, y_test, device="cpu"):
         print(f"{k}: acc={v['accuracy']:.4f}, macro_f1={v['macro_f1']:.4f}")
     print(f"\nBest model: {best_name}")
 
-    return results, best_name, best_pred
+    return results, best_name, best_pred, preds_by_model

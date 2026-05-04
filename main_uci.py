@@ -23,6 +23,7 @@ from src.eda import (
     plot_pca_2d
 )
 
+
 def _py(v):
     if isinstance(v, (np.integer,)):
         return int(v)
@@ -72,11 +73,8 @@ def _aggregate_results(run_results_by_model):
         }
     return summary
 
+
 def _per_class_from_report(report_dict, class_to_id):
-    """
-    Ubah classification_report(output_dict=True) menjadi ringkasan per kelas
-    dengan nama kelas asli.
-    """
     id_to_class = {str(v): str(k) for k, v in class_to_id.items()}
     out = {}
 
@@ -92,10 +90,12 @@ def _per_class_from_report(report_dict, class_to_id):
 
     return out
 
+
 def _feature_names():
     chans = ["RF", "BF", "VM", "ST"]
     feats = ["MAV", "RMS", "WL", "ZC"]
     return [f"{ch}_{ft}" for ch in chans for ft in feats]
+
 
 def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     with open(cfg_path, "r") as f:
@@ -114,15 +114,9 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
 
     df = load_uci_dataset(cfg["data_path"])
 
+    # EDA awal
     plot_class_distribution(df, out_path="figures/eda_class_distribution.png")
-
-    # contoh satu file mentah
     plot_raw_signal_example(df, sample_idx=0, out_path="figures/eda_raw_signal_example.png")
-
-    print(df[["file", "subject_id", "label"]].head())
-
-    for i in range(min(5, len(df))):
-        print(df.iloc[i]["file"], np.asarray(df.iloc[i]["signal"]).shape)
 
     fs = cfg.get("sampling_rate", 1000)
     win = cfg.get("window", 200)
@@ -130,9 +124,10 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     n_repeats = int(cfg.get("n_repeats", 10))
     save_all_runs = bool(cfg.get("save_all_runs", True))
 
-    # preprocess sekali saja
+    # preprocess + feature extraction sekali saja
     X_feat_list, y_list, g_list = [], [], []
     saved_example_signals = False
+
     for sig, label, subject_id in tqdm(
         zip(df["signal"], df["label"], df["subject_id"]),
         total=len(df),
@@ -176,6 +171,8 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     y = np.concatenate(y_list)
     groups = np.concatenate(g_list)
     feature_names = _feature_names()[:X.shape[1]]
+
+    # EDA fitur
     plot_feature_correlation_heatmap(X, out_path="figures/eda_feature_correlation_heatmap.png")
     plot_feature_boxplots(X, y, out_path="figures/eda_feature_boxplots.png")
     plot_pca_2d(X, y, out_path="figures/eda_pca_2d.png")
@@ -187,6 +184,7 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     run_results_by_model = defaultdict(list)
     run_details = []
     best_run_overall = None
+    run_artifacts = {}
 
     dataset_name = cfg.get("dataset", "UCI Lower Limb EMG")
 
@@ -220,7 +218,7 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             mlp_params=cfg.get("mlp_params", {})
         )
 
-        results, best_name, best_pred = evaluate_models(
+        results, best_name, best_pred, preds_by_model = evaluate_models(
             models,
             X_train, y_train,
             X_test, y_test,
@@ -231,31 +229,44 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             "repeat_index": repeat_idx + 1,
             "seed": seed,
             "test_size": cfg.get("test_size", 0.2),
-            "results_per_model": {}
-        }
-
-        repeat_record["split_info"] = {
-            "n_train_subjects": int(len(train_subjects)),
-            "n_test_subjects": int(len(test_subjects)),
-            "train_subjects": list(train_subjects),
-            "test_subjects": list(test_subjects)
+            "results_per_model": {},
+            "split_info": {
+                "n_train_subjects": int(len(train_subjects)),
+                "n_test_subjects": int(len(test_subjects)),
+                "train_subjects": list(train_subjects),
+                "test_subjects": list(test_subjects)
+            }
         }
 
         for model_name, metrics in results.items():
-            pred = None
-            # recompute predictions per model for confusion if model is best in this repeat only not necessary
+            pred = preds_by_model[model_name]
+
+            cm_model = confusion_matrix(y_test, pred).tolist()
+            rep_model = classification_report(y_test, pred, output_dict=True)
+            rep_model_per_class = _per_class_from_report(rep_model, class_to_id)
+
             run_results_by_model[model_name].append({
                 "repeat_index": repeat_idx + 1,
                 "seed": seed,
                 "accuracy": float(metrics["accuracy"]),
                 "macro_f1": float(metrics["macro_f1"])
             })
+
             repeat_record["results_per_model"][model_name] = {
                 "accuracy": float(metrics["accuracy"]),
-                "macro_f1": float(metrics["macro_f1"])
+                "macro_f1": float(metrics["macro_f1"]),
+                "confusion_matrix": cm_model,
+                "classification_report": rep_model,
+                "per_class_metrics": rep_model_per_class
             }
 
-        # simpan run terbaik global berdasarkan macro-F1 terbaik tunggal
+            # simpan artefak untuk confusion representative
+            run_artifacts[(repeat_idx + 1, model_name)] = {
+                "y_test": y_test.copy(),
+                "pred": pred.copy()
+            }
+
+        # best single run global
         best_acc = float(accuracy_score(y_test, best_pred))
         best_f1 = float(f1_score(y_test, best_pred, average="macro"))
         best_cm = confusion_matrix(y_test, best_pred).tolist()
@@ -280,29 +291,47 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
                 "macro_f1": best_f1,
                 "confusion_matrix": best_cm,
                 "classification_report": best_rep,
-                "y_test": y_test.tolist(),
-                "best_pred": best_pred.tolist(),
                 "per_class_metrics": best_rep_per_class,
+                "y_test": y_test.tolist(),
+                "best_pred": best_pred.tolist()
             }
 
         run_details.append(repeat_record)
 
     aggregated = _aggregate_results(run_results_by_model)
 
-    # pilih model terbaik berdasarkan mean macro-F1
+    # model terbaik berdasarkan mean macro-F1
     best_model_mean = max(aggregated.items(), key=lambda kv: kv[1]["macro_f1_mean"])[0]
+    target_mean_f1 = aggregated[best_model_mean]["macro_f1_mean"]
 
-    # bar plot: langsung pakai aggregated agar SD ikut tampil sebagai error bars
+    # representative run = run milik best_model_mean yang paling dekat ke mean
+    representative_run = min(
+        run_details,
+        key=lambda rr: abs(rr["results_per_model"][best_model_mean]["macro_f1"] - target_mean_f1)
+    )
+
+    representative_repeat_index = representative_run["repeat_index"]
+    representative_metrics = representative_run["results_per_model"][best_model_mean]
+    representative_artifact = run_artifacts[(representative_repeat_index, best_model_mean)]
+
+    # plot figures
     plot_bar(aggregated, f"{dataset_name} (Repeated Hold-out)")
 
     plot_confusion(
         np.array(best_run_overall["y_test"]),
         np.array(best_run_overall["best_pred"]),
-        f"{dataset_name} (Best Repeat)"
+        f"{dataset_name} (Best Single Run)"
+    )
+
+    plot_confusion(
+        np.array(representative_artifact["y_test"]),
+        np.array(representative_artifact["pred"]),
+        f"{dataset_name} ({best_model_mean} Representative Run)"
     )
 
     fig_bar = f"figures/bar_{_safe_name(dataset_name + ' (Repeated Hold-out)')}.png"
-    fig_conf = f"figures/confusion_{_safe_name(dataset_name + ' (Best Repeat)')}.png"
+    fig_conf_best_single = f"figures/confusion_{_safe_name(dataset_name + ' (Best Single Run)')}.png"
+    fig_conf_representative = f"figures/confusion_{_safe_name(dataset_name + f' ({best_model_mean} Representative Run)')}.png"
 
     print("\n=== Aggregated Summary (mean ± SD) ===")
     for model_name, stats in aggregated.items():
@@ -313,6 +342,13 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         )
 
     print(f"\nBest model by mean macro-F1: {best_model_mean}")
+
+    print("\n=== Representative run of best mean model ===")
+    print(f"Model: {best_model_mean}")
+    print(f"Repeat index: {representative_repeat_index}")
+    print(f"Accuracy: {representative_metrics['accuracy']:.4f}")
+    print(f"Macro F1: {representative_metrics['macro_f1']:.4f}")
+    print(f"Target mean macro F1: {target_mean_f1:.4f}")
 
     print("\n=== Per-class metrics (best single run) ===")
     for cls_name, m in best_run_overall["per_class_metrics"].items():
@@ -369,11 +405,22 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             "macro_f1": best_run_overall["macro_f1"],
             "confusion_matrix": best_run_overall["confusion_matrix"],
             "classification_report": best_run_overall["classification_report"],
-            "per_class_metrics": best_run_overall["per_class_metrics"],
+            "per_class_metrics": best_run_overall["per_class_metrics"]
+        },
+        "representative_run_best_mean_model": {
+            "repeat_index": representative_repeat_index,
+            "model": best_model_mean,
+            "target_mean_macro_f1": float(target_mean_f1),
+            "accuracy": float(representative_metrics["accuracy"]),
+            "macro_f1": float(representative_metrics["macro_f1"]),
+            "confusion_matrix": representative_metrics["confusion_matrix"],
+            "classification_report": representative_metrics["classification_report"],
+            "per_class_metrics": representative_metrics["per_class_metrics"]
         },
         "figures": {
             "bar": fig_bar,
-            "confusion": fig_conf
+            "confusion_best_single": fig_conf_best_single,
+            "confusion_representative": fig_conf_representative
         }
     }
 
