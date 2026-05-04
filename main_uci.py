@@ -59,6 +59,7 @@ def _aggregate_results(run_results_by_model):
     for model_name, runs in run_results_by_model.items():
         accs = np.array([r["accuracy"] for r in runs], dtype=float)
         f1s = np.array([r["macro_f1"] for r in runs], dtype=float)
+        times = np.array([r["fit_predict_time_sec"] for r in runs], dtype=float)
 
         summary[model_name] = {
             "accuracy_mean": float(np.mean(accs)),
@@ -69,6 +70,10 @@ def _aggregate_results(run_results_by_model):
             "macro_f1_sd": float(np.std(f1s, ddof=1)) if len(f1s) > 1 else 0.0,
             "macro_f1_min": float(np.min(f1s)),
             "macro_f1_max": float(np.max(f1s)),
+            "fit_predict_time_sec_mean": float(np.mean(times)),
+            "fit_predict_time_sec_sd": float(np.std(times, ddof=1)) if len(times) > 1 else 0.0,
+            "fit_predict_time_sec_min": float(np.min(times)),
+            "fit_predict_time_sec_max": float(np.max(times)),
             "n_runs": int(len(runs))
         }
     return summary
@@ -97,6 +102,28 @@ def _feature_names():
     return [f"{ch}_{ft}" for ch in chans for ft in feats]
 
 
+def _package_versions():
+    import sys
+    import sklearn
+    import numpy
+    import scipy
+    import pandas
+    import matplotlib
+    import yaml
+    import torch
+
+    return {
+        "python": sys.version,
+        "numpy": numpy.__version__,
+        "scipy": scipy.__version__,
+        "pandas": pandas.__version__,
+        "scikit_learn": sklearn.__version__,
+        "matplotlib": matplotlib.__version__,
+        "pyyaml": yaml.__version__,
+        "torch": torch.__version__
+    }
+
+
 def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
@@ -114,7 +141,6 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
 
     df = load_uci_dataset(cfg["data_path"])
 
-    # EDA awal
     plot_class_distribution(df, out_path="figures/eda_class_distribution.png")
     plot_raw_signal_example(df, sample_idx=0, out_path="figures/eda_raw_signal_example.png")
 
@@ -124,7 +150,6 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     n_repeats = int(cfg.get("n_repeats", 10))
     save_all_runs = bool(cfg.get("save_all_runs", True))
 
-    # preprocess + feature extraction sekali saja
     X_feat_list, y_list, g_list = [], [], []
     saved_example_signals = False
 
@@ -172,7 +197,6 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     groups = np.concatenate(g_list)
     feature_names = _feature_names()[:X.shape[1]]
 
-    # EDA fitur
     plot_feature_correlation_heatmap(X, out_path="figures/eda_feature_correlation_heatmap.png")
     plot_feature_boxplots(X, y, out_path="figures/eda_feature_boxplots.png")
     plot_pca_2d(X, y, out_path="figures/eda_pca_2d.png")
@@ -208,6 +232,7 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
 
         print(f"[INFO] Train subjects: {len(train_subjects)} | Test subjects: {len(test_subjects)}")
         print(f"[INFO] Train/Test subject overlap: {len(overlap_subjects)}")
+        print(f"[INFO] Train samples: {len(X_train)} | Test samples: {len(X_test)}")
 
         models = build_models(
             cfg.get("models", ["SVM", "RF", "MLP"]),
@@ -233,6 +258,8 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             "split_info": {
                 "n_train_subjects": int(len(train_subjects)),
                 "n_test_subjects": int(len(test_subjects)),
+                "n_train_samples": int(len(X_train)),
+                "n_test_samples": int(len(X_test)),
                 "train_subjects": list(train_subjects),
                 "test_subjects": list(test_subjects)
             }
@@ -249,24 +276,24 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
                 "repeat_index": repeat_idx + 1,
                 "seed": seed,
                 "accuracy": float(metrics["accuracy"]),
-                "macro_f1": float(metrics["macro_f1"])
+                "macro_f1": float(metrics["macro_f1"]),
+                "fit_predict_time_sec": float(metrics["fit_predict_time_sec"])
             })
 
             repeat_record["results_per_model"][model_name] = {
                 "accuracy": float(metrics["accuracy"]),
                 "macro_f1": float(metrics["macro_f1"]),
+                "fit_predict_time_sec": float(metrics["fit_predict_time_sec"]),
                 "confusion_matrix": cm_model,
                 "classification_report": rep_model,
                 "per_class_metrics": rep_model_per_class
             }
 
-            # simpan artefak untuk confusion representative
             run_artifacts[(repeat_idx + 1, model_name)] = {
                 "y_test": y_test.copy(),
                 "pred": pred.copy()
             }
 
-        # best single run global
         best_acc = float(accuracy_score(y_test, best_pred))
         best_f1 = float(f1_score(y_test, best_pred, average="macro"))
         best_cm = confusion_matrix(y_test, best_pred).tolist()
@@ -300,11 +327,9 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
 
     aggregated = _aggregate_results(run_results_by_model)
 
-    # model terbaik berdasarkan mean macro-F1
     best_model_mean = max(aggregated.items(), key=lambda kv: kv[1]["macro_f1_mean"])[0]
     target_mean_f1 = aggregated[best_model_mean]["macro_f1_mean"]
 
-    # representative run = run milik best_model_mean yang paling dekat ke mean
     representative_run = min(
         run_details,
         key=lambda rr: abs(rr["results_per_model"][best_model_mean]["macro_f1"] - target_mean_f1)
@@ -314,7 +339,6 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
     representative_metrics = representative_run["results_per_model"][best_model_mean]
     representative_artifact = run_artifacts[(representative_repeat_index, best_model_mean)]
 
-    # plot figures
     plot_bar(aggregated, f"{dataset_name} (Repeated Hold-out)")
 
     plot_confusion(
@@ -338,7 +362,8 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         print(
             f"{model_name}: "
             f"acc={stats['accuracy_mean']:.4f} ± {stats['accuracy_sd']:.4f}, "
-            f"macro_f1={stats['macro_f1_mean']:.4f} ± {stats['macro_f1_sd']:.4f}"
+            f"macro_f1={stats['macro_f1_mean']:.4f} ± {stats['macro_f1_sd']:.4f}, "
+            f"time={stats['fit_predict_time_sec_mean']:.2f} ± {stats['fit_predict_time_sec_sd']:.2f}s"
         )
 
     print(f"\nBest model by mean macro-F1: {best_model_mean}")
@@ -373,6 +398,7 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
         "split_strategy": "subject-wise GroupShuffleSplit",
         "n_unique_subjects": int(len(np.unique(groups))),
         "device": str(device),
+        "package_versions": _package_versions(),
         "config": {
             "cfg_path": cfg_path,
             "data_path": cfg.get("data_path"),
@@ -391,6 +417,12 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             "n_windows": int(X.shape[0]),
             "features_per_window": int(X.shape[1]),
             "n_classes": int(len(classes_sorted))
+        },
+        "dataset_channel_usage": {
+            "emg_channels_used": ["RF", "BF", "VM", "ST"],
+            "n_emg_channels_used": 4,
+            "goniometry_used": False,
+            "notes": "The original dataset may contain an additional goniometry channel, but this pipeline uses only the four EMG channels."
         },
         "feature_names": feature_names,
         "class_map": {str(int(class_to_id[c])): _safe_name(c) for c in classes_sorted},
@@ -413,9 +445,18 @@ def run(cfg_path="D:/emg-baseline/emg-baseline/configs/uci_baseline.yaml"):
             "target_mean_macro_f1": float(target_mean_f1),
             "accuracy": float(representative_metrics["accuracy"]),
             "macro_f1": float(representative_metrics["macro_f1"]),
+            "fit_predict_time_sec": float(representative_metrics["fit_predict_time_sec"]),
             "confusion_matrix": representative_metrics["confusion_matrix"],
             "classification_report": representative_metrics["classification_report"],
             "per_class_metrics": representative_metrics["per_class_metrics"]
+        },
+        "reproducibility_notes": {
+            "feature_extraction_done_once": True,
+            "subjectwise_split": True,
+            "random_seed_controlled": True,
+            "scaling_applied_to": ["SVM", "MLP"],
+            "random_forest_scaled": False,
+            "json_logging_enabled": True
         },
         "figures": {
             "bar": fig_bar,

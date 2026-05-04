@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
@@ -31,14 +32,6 @@ class TorchMLPNet(nn.Module):
 
 
 class TorchMLPClassifier:
-    """
-    Scikit-like wrapper untuk PyTorch MLP agar tetap kompatibel dengan evaluate_models().
-
-    Improvement:
-    - menambahkan StandardScaler internal
-    - scaler di-fit hanya pada train set
-    - X_val dan X_test ditransform menggunakan scaler yang sama
-    """
     def __init__(
         self,
         input_dim,
@@ -67,7 +60,6 @@ class TorchMLPClassifier:
         self.random_state = random_state
         self.val_fraction = val_fraction
 
-        # scaler khusus untuk MLP
         self.scaler = StandardScaler()
 
         torch.manual_seed(random_state)
@@ -86,7 +78,6 @@ class TorchMLPClassifier:
         X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y, dtype=np.int64)
 
-        # standardization fit hanya pada data train fold ini
         X = self.scaler.fit_transform(X).astype(np.float32)
 
         n = len(X)
@@ -103,7 +94,6 @@ class TorchMLPClassifier:
         X_val = X[val_idx]
         y_val = y[val_idx]
 
-        # class weights untuk imbalance
         classes = np.unique(y_tr)
         cls_weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_tr)
         full_class_weights = np.ones(self.n_classes, dtype=np.float32)
@@ -230,16 +220,11 @@ def build_models(names, input_dim=None, n_classes=None, device="cpu", random_sta
 
 def evaluate_models(models, X_train, y_train, X_test, y_test, device="cpu"):
     """
-    Evaluasi semua model:
-    - SVM: StandardScaler + SVC
-    - RF : tanpa scaling
-    - MLP: scaler internal + PyTorch
-
     Return:
-    - results: metrik per model
-    - best_name: model terbaik pada repeat ini
-    - best_pred: prediksi model terbaik pada repeat ini
-    - preds_by_model: prediksi semua model
+    - results: metrics per model
+    - best_name
+    - best_pred
+    - preds_by_model
     """
     results = {}
     preds_by_model = {}
@@ -248,15 +233,24 @@ def evaluate_models(models, X_train, y_train, X_test, y_test, device="cpu"):
     for name, model in models.items():
         print(f"\n=== Training {name} ===")
         try:
+            t0 = time.perf_counter()
+
             model.fit(X_train, y_train)
             pred = model.predict(X_test)
+
+            elapsed_sec = time.perf_counter() - t0
+
             preds_by_model[name] = pred
 
             acc = accuracy_score(y_test, pred)
             f1 = f1_score(y_test, pred, average="macro", zero_division=0)
-            results[name] = {"accuracy": float(acc), "macro_f1": float(f1)}
+            results[name] = {
+                "accuracy": float(acc),
+                "macro_f1": float(f1),
+                "fit_predict_time_sec": float(elapsed_sec)
+            }
 
-            print(f"{name} → Accuracy: {acc:.4f} | Macro F1: {f1:.4f}")
+            print(f"{name} → Accuracy: {acc:.4f} | Macro F1: {f1:.4f} | Time: {elapsed_sec:.2f}s")
 
             if f1 > best_f1:
                 best_f1, best_name, best_pred = f1, name, pred
@@ -267,7 +261,11 @@ def evaluate_models(models, X_train, y_train, X_test, y_test, device="cpu"):
 
     print("\n=== Summary ===")
     for k, v in results.items():
-        print(f"{k}: acc={v['accuracy']:.4f}, macro_f1={v['macro_f1']:.4f}")
+        print(
+            f"{k}: acc={v['accuracy']:.4f}, "
+            f"macro_f1={v['macro_f1']:.4f}, "
+            f"time={v['fit_predict_time_sec']:.2f}s"
+        )
     print(f"\nBest model: {best_name}")
 
     return results, best_name, best_pred, preds_by_model
